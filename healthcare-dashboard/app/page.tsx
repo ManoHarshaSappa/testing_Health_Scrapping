@@ -37,7 +37,9 @@ export default function Home() {
   const [stats, setStats] = useState<Stats | null>(null);
 
   useEffect(() => {
-    fetch("/api/stats").then((r) => r.json()).then(setStats);
+    fetch("/api/stats").then((r) => r.json()).then(d => {
+      if (d && !d.error) setStats(d);
+    });
   }, []);
 
   return (
@@ -75,9 +77,9 @@ export default function Home() {
       <section className="px-8 pb-12 bg-[#05091a]">
         <div className="max-w-6xl mx-auto grid grid-cols-2 md:grid-cols-4 gap-4">
           {[
-            { label: "Total Patients", value: stats?.totals.TOTAL_PATIENTS ?? "—", color: "text-blue-400" },
-            { label: "Total Visits",   value: stats?.totals.TOTAL_VISITS   ?? "—", color: "text-cyan-400" },
-            { label: "Diagnoses Tracked", value: stats ? stats.byDiagnosis.length + "+" : "—", color: "text-emerald-400" },
+            { label: "Total Patients", value: stats?.totals?.TOTAL_PATIENTS ?? "—", color: "text-blue-400" },
+            { label: "Total Visits",   value: stats?.totals?.TOTAL_VISITS   ?? "—", color: "text-cyan-400" },
+            { label: "Diagnoses Tracked", value: stats?.byDiagnosis?.length ? stats.byDiagnosis.length + "+" : "—", color: "text-emerald-400" },
             { label: "Pipeline Layers", value: "5", color: "text-amber-400" },
           ].map((kpi) => (
             <div key={kpi.label} className="bg-[#0d1735] rounded-2xl p-6 text-center border border-[#1a2f5a]">
