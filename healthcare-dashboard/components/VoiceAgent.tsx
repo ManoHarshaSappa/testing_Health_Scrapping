@@ -1,268 +1,79 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import SummaryCard from "./SummaryCard";
 
 interface Message { role: "user" | "assistant"; content: string; }
-interface VoiceAgentProps { patientName: string; patientHistory: string; }
+interface VoiceAgentProps { patientName: string; patientHistory: string; patientId: string; dob?: string; gender?: string; }
 
-interface SummaryData {
-  chiefComplaint: string;
-  urgency: "Low" | "Medium" | "High" | "Emergency";
-  urgencyReason: string;
-  symptoms: string[];
-  duration: string;
-  medications: string[];
-  relevantHistory: string[];
-  doctorPriority: string[];
-  patientNote: string;
-}
+type Status = "idle" | "processing" | "speaking" | "listening";
+type Tab    = "conversation" | "summary";
 
-// ── Browser speech recognition types ────────────────────────────────────────
-interface SpeechRecognitionEvent extends Event {
-  results: SpeechRecognitionResultList;
-}
-interface SpeechRecognitionErrorEvent extends Event {
-  error: string;
-}
-interface SR extends EventTarget {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  start(): void;
-  stop(): void;
-  abort(): void;
-  onstart: (() => void) | null;
-  onend: (() => void) | null;
-  onresult: ((e: SpeechRecognitionEvent) => void) | null;
-  onerror: ((e: SpeechRecognitionErrorEvent) => void) | null;
-}
-declare global {
-  interface Window {
-    SpeechRecognition: new () => SR;
-    webkitSpeechRecognition: new () => SR;
-  }
-}
+const SILENT = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
 
-// ── Urgency styles ────────────────────────────────────────────────────────────
-const urgencyStyle: Record<string, string> = {
-  Low:       "bg-emerald-900/40 text-emerald-300 border-emerald-700/60",
-  Medium:    "bg-amber-900/40 text-amber-300 border-amber-700/60",
-  High:      "bg-red-900/40 text-red-300 border-red-700/60",
-  Emergency: "bg-red-900/60 text-red-200 border-red-600",
-};
-const urgencyDot: Record<string, string> = {
-  Low: "bg-emerald-400", Medium: "bg-amber-400", High: "bg-red-400", Emergency: "bg-red-300",
-};
+const QUICK_PHRASES = [
+  "Yes", "No", "Not sure",
+  "No medications", "No allergies",
+  "2–3 days ago", "Pain is 7 out of 10",
+  "It's getting worse",
+];
 
-// ── Summary card ─────────────────────────────────────────────────────────────
-function SummaryCard({ raw }: { raw: string }) {
-  let data: SummaryData | null = null;
-  try {
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (match) data = JSON.parse(match[0]);
-  } catch { /* fall through */ }
+export default function VoiceAgent({ patientName, patientHistory, patientId, dob = "", gender = "" }: VoiceAgentProps) {
+  const [started, setStarted]     = useState(false);
+  const [status, setStatus]       = useState<Status>("idle");
+  const [messages, setMessages]   = useState<Message[]>([]);
+  const [liveText, setLiveText]   = useState("");
+  const [done, setDone]           = useState(false);
+  const [tab, setTab]             = useState<Tab>("conversation");
+  const [summary, setSummary]     = useState("");
+  const [supported, setSupported] = useState(true);
+  const [saveForm, setSaveForm]   = useState({ diagnosisName: "", diagnosisCode: "", providerName: "", patientClass: "Outpatient" });
+  const [saving, setSaving]       = useState(false);
+  const [saved, setSaved]         = useState(false);
 
-  if (!data) {
-    return <pre className="text-blue-200 text-sm whitespace-pre-wrap font-sans leading-relaxed bg-[#0d1735] rounded-xl p-5 border border-[#1a2f5a]">{raw}</pre>;
-  }
+  const router          = useRouter();
+  const messagesRef     = useRef<Message[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef  = useRef<any>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chatEndRef      = useRef<HTMLDivElement>(null);
 
-  const uStyle = urgencyStyle[data.urgency] ?? urgencyStyle.Medium;
-  const uDot   = urgencyDot[data.urgency]   ?? urgencyDot.Medium;
-
-  return (
-    <div className="space-y-3">
-      <div className="bg-[#0d1735] rounded-xl p-4 border border-[#1a2f5a]">
-        <div className="flex items-center justify-between mb-2">
-          <p className="text-xs text-blue-500/70 uppercase tracking-widest font-semibold">Chief Complaint</p>
-          <span className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border font-semibold ${uStyle}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${uDot}`} />
-            {data.urgency}
-          </span>
-        </div>
-        <p className="text-white text-base font-semibold leading-snug">{data.chiefComplaint}</p>
-        {data.urgencyReason && <p className="text-blue-400/60 text-xs mt-1.5 italic">{data.urgencyReason}</p>}
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-[#0d1735] rounded-xl p-4 border border-[#1a2f5a]">
-          <p className="text-xs text-blue-500/70 uppercase tracking-widest font-semibold mb-2.5">Symptoms</p>
-          <div className="flex flex-wrap gap-1.5">
-            {data.symptoms.length ? data.symptoms.map((s, i) => (
-              <span key={i} className="text-xs bg-blue-900/50 text-blue-200 border border-blue-700/50 px-2.5 py-1 rounded-full">{s}</span>
-            )) : <span className="text-blue-500/40 text-xs">None reported</span>}
-          </div>
-        </div>
-        <div className="bg-[#0d1735] rounded-xl p-4 border border-[#1a2f5a]">
-          <p className="text-xs text-blue-500/70 uppercase tracking-widest font-semibold mb-2.5">Duration</p>
-          <p className="text-blue-100 text-sm font-medium">{data.duration || "Not specified"}</p>
-        </div>
-      </div>
-
-      {(data.medications.length > 0 || data.relevantHistory.length > 0) && (
-        <div className="grid grid-cols-2 gap-3">
-          <div className="bg-[#0d1735] rounded-xl p-4 border border-[#1a2f5a]">
-            <p className="text-xs text-blue-500/70 uppercase tracking-widest font-semibold mb-2.5">Medications</p>
-            {data.medications.length
-              ? data.medications.map((m, i) => <p key={i} className="text-blue-200 text-xs leading-relaxed">{m}</p>)
-              : <p className="text-blue-500/40 text-xs">None mentioned</p>}
-          </div>
-          <div className="bg-[#0d1735] rounded-xl p-4 border border-[#1a2f5a]">
-            <p className="text-xs text-blue-500/70 uppercase tracking-widest font-semibold mb-2.5">Relevant History</p>
-            {data.relevantHistory.length
-              ? data.relevantHistory.map((h, i) => <p key={i} className="text-blue-200 text-xs leading-relaxed">{h}</p>)
-              : <p className="text-blue-500/40 text-xs">No relevant history</p>}
-          </div>
-        </div>
-      )}
-
-      {data.doctorPriority.length > 0 && (
-        <div className="bg-[#0d1735] rounded-xl p-4 border border-[#1a2f5a]">
-          <p className="text-xs text-blue-500/70 uppercase tracking-widest font-semibold mb-3">Doctor&apos;s Priority Checklist</p>
-          <div className="space-y-2">
-            {data.doctorPriority.map((item, i) => (
-              <div key={i} className="flex items-start gap-2.5">
-                <div className="w-4 h-4 rounded border border-blue-700/50 shrink-0 mt-0.5" />
-                <p className="text-blue-100 text-sm">{item}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {data.patientNote && <p className="text-blue-500/50 text-xs italic text-center px-2">{data.patientNote}</p>}
-    </div>
-  );
-}
-
-type AgentState = "idle" | "loading" | "speaking" | "listening" | "done";
-type Tab = "conversation" | "summary";
-
-// ── Main component ─────────────────────────────────────────────────────────
-export default function VoiceAgent({ patientName, patientHistory }: VoiceAgentProps) {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [liveText, setLiveText] = useState("");
-  const [state, setState]       = useState<AgentState>("idle");
-  const [tab, setTab]           = useState<Tab>("conversation");
-  const [summary, setSummary]   = useState("");
-  const [micError, setMicError] = useState(false);
-
-  const messagesRef  = useRef<Message[]>([]);
-  const stateRef     = useRef<AgentState>("idle");
-  const chatEndRef   = useRef<HTMLDivElement>(null);
-  const audioRef     = useRef<HTMLAudioElement | null>(null);
-  const recRef       = useRef<SR | null>(null);
-  const doneRef      = useRef(false);
-  const liveTextRef  = useRef("");
-
-  const setAgentState = (s: AgentState) => { setState(s); stateRef.current = s; };
-
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, liveText]);
-
-  useEffect(() => () => {
-    doneRef.current = true;
-    recRef.current?.abort();
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ""; }
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) setSupported(false);
   }, []);
 
-  // ── Unlock <audio> autoplay using a throwaway element (must be in click handler) ──
-  function unlockAudio() {
-    // Use a separate throwaway element — don't touch audioRef so it stays clean
-    const tmp = new Audio();
-    tmp.play().catch(() => {});
-    tmp.pause();
-    // Pre-create the real audio element now so it's ready
-    audioRef.current = new Audio();
-  }
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, liveText]);
 
-  // ── Aria speaks via OpenAI TTS ───────────────────────────────────────────
   async function speakText(text: string): Promise<void> {
-    setAgentState("speaking");
-    return new Promise(async (resolve) => {
-      // Hard timeout fallback — if onended never fires, unblock after estimated time
+    setStatus("speaking");
+    return new Promise((resolve) => {
       const wordCount = text.trim().split(/\s+/).length;
-      const timeoutMs = Math.max(8000, wordCount * 650);
-      const fallback  = setTimeout(() => { resolve(); }, timeoutMs);
-      const done = () => { clearTimeout(fallback); resolve(); };
+      const fallback  = setTimeout(resolve, Math.max(6000, wordCount * 550));
 
-      try {
-        const res = await fetch("/api/speak", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
-        });
-        if (!res.ok) { done(); return; }
-
-        const blob  = await res.blob();
-        const url   = URL.createObjectURL(blob);
-        const audio = audioRef.current ?? new Audio();
-        audioRef.current = audio;
-        audio.src     = url;
-        audio.onended = () => { URL.revokeObjectURL(url); done(); };
-        audio.onerror = () => { URL.revokeObjectURL(url); done(); };
-        const playPromise = audio.play();
-        if (playPromise) playPromise.catch(() => done());
-      } catch {
-        done();
-      }
+      fetch("/api/speak", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      })
+        .then(r => r.blob())
+        .then(blob => {
+          const url   = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          audio.onended = () => { clearTimeout(fallback); URL.revokeObjectURL(url); resolve(); };
+          audio.onerror = () => { clearTimeout(fallback); URL.revokeObjectURL(url); resolve(); };
+          audio.play().catch(() => { clearTimeout(fallback); resolve(); });
+        })
+        .catch(() => { clearTimeout(fallback); resolve(); });
     });
   }
 
-  // ── User speaks via Chrome SpeechRecognition ─────────────────────────────
-  function startListening() {
-    if (doneRef.current || stateRef.current === "done") return;
-
-    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRec) {
-      alert("Voice input requires Chrome. Please open in Chrome.");
-      return;
-    }
-
-    setAgentState("listening");
-    liveTextRef.current = "";
-    setLiveText("");
-
-    const rec = new SpeechRec();
-    rec.continuous     = false;
-    rec.interimResults = true;
-    rec.lang           = "en-US";
-    recRef.current     = rec;
-
-    rec.onstart = () => setAgentState("listening");
-
-    rec.onresult = (e: SpeechRecognitionEvent) => {
-      const transcript = Array.from(e.results)
-        .map((r: SpeechRecognitionResult) => r[0].transcript)
-        .join("");
-      liveTextRef.current = transcript;   // ← fix: keep ref in sync with state
-      setLiveText(transcript);
-    };
-
-    rec.onend = () => {
-      const text = liveTextRef.current.trim();
-      setLiveText("");
-      liveTextRef.current = "";
-      if (!text || doneRef.current) return;
-      const userMsg: Message = { role: "user", content: text };
-      const updated = [...messagesRef.current, userMsg];
-      setMessages(prev => [...prev, userMsg]);
-      messagesRef.current = updated;
-      callAI(updated);
-    };
-
-    rec.onerror = (e: SpeechRecognitionErrorEvent) => {
-      if (e.error === "not-allowed") { setMicError(true); return; }
-      // no-speech or network — just restart quietly
-      if (!doneRef.current && stateRef.current !== "done") {
-        setTimeout(() => startListening(), 300);
-      }
-    };
-
-    rec.start();
-  }
-
-  // ── Gemini for Aria's reply ──────────────────────────────────────────────
   async function callAI(msgs: Message[]) {
-    setAgentState("loading");
+    setStatus("processing");
     try {
       const res  = await fetch("/api/chat", {
         method: "POST",
@@ -270,24 +81,98 @@ export default function VoiceAgent({ patientName, patientHistory }: VoiceAgentPr
         body: JSON.stringify({ messages: msgs, patientName, patientHistory }),
       });
       const data = await res.json();
-      if (!data.response) throw new Error(data.error || "No response");
       const reply = data.response as string;
 
-      setMessages(prev => [...prev, { role: "assistant", content: reply }]);
-      messagesRef.current = [...msgs, { role: "assistant", content: reply }];
+      const updated = [...msgs, { role: "assistant" as const, content: reply }];
+      setMessages(updated);
+      messagesRef.current = updated;
+
+      const isDone = reply.toLowerCase().includes("doctor will be with you shortly") ||
+                     reply.toLowerCase().includes("i have everything i need");
 
       await speakText(reply);
 
-      if (reply.toLowerCase().includes("doctor will be with you shortly")) {
-        setAgentState("done");
-        doneRef.current = true;
-        buildSummary(messagesRef.current);
+      if (isDone) {
+        setDone(true);
+        buildSummary(updated);
       } else {
         startListening();
       }
     } catch {
-      if (!doneRef.current) startListening();
+      startListening();
     }
+  }
+
+  function sendTranscript(transcript: string) {
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    if (!transcript.trim()) { startListening(); return; }
+    const userMsg: Message = { role: "user", content: transcript.trim() };
+    const updated = [...messagesRef.current, userMsg];
+    setMessages(updated);
+    messagesRef.current = updated;
+    setLiveText("");
+    callAI(updated);
+  }
+
+  function handleMicTap() {
+    if (status !== "listening") return;
+    recognitionRef.current?.stop();
+  }
+
+  function startListening() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+
+    setStatus("listening");
+    setLiveText("");
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const recognition: any = new SR();
+    recognitionRef.current      = recognition;
+    recognition.continuous      = true;
+    recognition.interimResults  = true;
+    recognition.lang            = "en-US";
+
+    let finalTranscript = "";
+
+    function resetSilenceTimer() {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = setTimeout(() => recognition.stop(), 5000);
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognition.onresult = (e: any) => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) finalTranscript += e.results[i][0].transcript;
+        else interim += e.results[i][0].transcript;
+      }
+      setLiveText(finalTranscript || interim);
+      resetSilenceTimer();
+    };
+
+    recognition.onstart = () => resetSilenceTimer();
+
+    recognition.onend = () => {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      sendTranscript(finalTranscript);
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognition.onerror = (e: any) => {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      if (e.error === "no-speech" || e.error === "audio-capture") startListening();
+    };
+
+    try { recognition.start(); } catch { /* already running */ }
+  }
+
+  async function handleStart() {
+    try { await new Audio(SILENT).play(); } catch { /* ignore */ }
+    setStarted(true);
+    callAI([]);
   }
 
   async function buildSummary(msgs: Message[]) {
@@ -298,190 +183,356 @@ export default function VoiceAgent({ patientName, patientHistory }: VoiceAgentPr
       body: JSON.stringify({ conversation: msgs, patientName, patientHistory }),
     });
     const data = await res.json();
-    setSummary(data.summary || "");
+    const raw  = data.summary || "";
+    setSummary(raw);
+    try {
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) {
+        const parsed = JSON.parse(match[0]);
+        setSaveForm(f => ({ ...f, diagnosisName: parsed.chiefComplaint || "" }));
+      }
+    } catch { /* ignore */ }
   }
 
-  function endConsultation() {
-    doneRef.current = true;
-    recRef.current?.abort();
-    if (audioRef.current) audioRef.current.pause();
-    setAgentState("done");
+  async function handleSaveVisit() {
+    setSaving(true);
+    try {
+      await fetch("/api/visits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ patientId, dob, gender, ...saveForm }),
+      });
+      try {
+        const cache = JSON.parse(localStorage.getItem("patient_data_cache") || "{}");
+        delete cache[patientId];
+        localStorage.setItem("patient_data_cache", JSON.stringify(cache));
+      } catch { /* ignore */ }
+      try { localStorage.removeItem(`new_patient_${patientId}`); } catch { /* ignore */ }
+      setSaved(true);
+    } catch { /* ignore */ }
+    setSaving(false);
+  }
+
+  function handleEnd() {
+    recognitionRef.current?.stop();
+    setDone(true);
     buildSummary(messagesRef.current);
   }
 
-  async function handleTapToStart() {
-    unlockAudio();          // must happen inside click handler for browser autoplay
-    setAgentState("loading");
-    await callAI([]);
-  }
-
-  // ─── RENDER ──────────────────────────────────────────────────────────────
-
-  if (state === "idle") {
+  // Not started
+  if (!started) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-6 text-center">
+        {!supported && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 text-amber-700 text-sm max-w-xs">
+            Voice requires Chrome. Use Text mode if you&apos;re on another browser.
+          </div>
+        )}
         <div className="relative">
-          <div className="w-24 h-24 rounded-full bg-blue-600/10 border border-blue-500/30 flex items-center justify-center">
-            <svg className="w-10 h-10 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+          <div className="w-20 h-20 rounded-full bg-blue-50 border border-blue-200 flex items-center justify-center shadow-sm">
+            <svg className="w-9 h-9 text-blue-600" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1 1.93c-3.94-.49-7-3.85-7-7.93H2c0 4.97 3.58 9.09 8.25 9.87V22h3.5v-4.13C18.42 17.09 22 12.97 22 8h-2c0 4.08-3.06 7.44-7 7.93V16h-2v-.07z"/>
             </svg>
           </div>
-          <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-blue-500/30 border border-blue-400/40 animate-ping" />
+          <span className="absolute top-0 right-0 w-4 h-4 rounded-full bg-blue-100 border border-blue-300 animate-ping" />
         </div>
         <div>
-          <p className="text-white font-semibold text-base mb-1">Ready to talk with {patientName}</p>
-          <p className="text-blue-400/60 text-sm max-w-xs">Aria will greet the patient and collect their symptoms by voice</p>
+          <p className="text-slate-900 font-semibold text-base mb-1">Aria will speak with {patientName}</p>
+          <p className="text-slate-400 text-sm max-w-xs leading-relaxed">
+            Speak naturally. Aria asks questions and listens automatically.
+          </p>
         </div>
-        <button onClick={handleTapToStart}
-          className="bg-blue-600 hover:bg-blue-500 text-white font-semibold px-8 py-3 rounded-xl transition shadow-xl shadow-blue-900/50 text-sm">
-          Tap to Begin
+        <button onClick={handleStart} disabled={!supported}
+          className="bg-blue-700 hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold px-8 py-3 rounded-xl transition shadow-md text-sm">
+          Begin Voice Intake
         </button>
-        <p className="text-blue-500/40 text-xs">Aria speaks via OpenAI · Your voice via Chrome mic · Must use Chrome</p>
       </div>
     );
   }
 
-  if (micError) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-4">
-        <div className="w-14 h-14 rounded-full bg-red-900/30 border border-red-700/40 flex items-center justify-center">
-          <svg className="w-6 h-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-          </svg>
-        </div>
-        <p className="text-red-300 font-semibold">Microphone Access Denied</p>
-        <p className="text-blue-400/60 text-sm max-w-sm">
-          Click the lock icon in Chrome address bar → Site Settings → Microphone → Allow → refresh the page.
-        </p>
-      </div>
-    );
-  }
+  const statusLabel = done ? "Consultation complete" : {
+    idle:       "",
+    processing: "Aria is thinking...",
+    speaking:   "Aria is speaking",
+    listening:  "Listening...",
+  }[status];
 
-  const stateLabel =
-    state === "loading"   ? "Thinking..." :
-    state === "speaking"  ? "Aria is speaking..." :
-    state === "listening" ? "Listening — speak now" :
-    "Consultation complete";
-
-  const dotColor =
-    state === "loading"   ? "bg-amber-400 animate-pulse" :
-    state === "speaking"  ? "bg-cyan-400 animate-pulse" :
-    state === "listening" ? "bg-green-400 animate-pulse" :
-    "bg-gray-500";
+  const statusDot = {
+    idle:       "",
+    processing: "bg-amber-500 animate-pulse",
+    speaking:   "bg-blue-500",
+    listening:  "bg-emerald-500 animate-pulse",
+  }[status];
 
   return (
-    <div className="flex flex-col h-full gap-4">
+    <div className="flex flex-col h-full gap-3">
 
       {/* Status bar */}
-      <div className="flex items-center justify-between">
+      <div className="shrink-0 flex items-center justify-between bg-slate-50 rounded-xl px-4 py-2.5 border border-slate-100">
         <div className="flex items-center gap-2.5">
-          <span className={`w-2.5 h-2.5 rounded-full ${dotColor}`} />
-          <span className="text-sm text-blue-200/80 font-medium">{stateLabel}</span>
+          {status === "speaking" && !done ? (
+            <div className="flex items-end gap-0.5 h-3.5">
+              {[5,9,6,10,7].map((h,i) => (
+                <span key={i} className="w-0.5 bg-blue-500 rounded-full animate-bounce"
+                  style={{height:`${h}px`, animationDelay:`${i*80}ms`}} />
+              ))}
+            </div>
+          ) : status === "processing" ? (
+            <div className="flex items-end gap-0.5 h-3.5">
+              {[5,9,6,8].map((h,i) => (
+                <span key={i} className="w-0.5 bg-amber-400 rounded-full animate-bounce"
+                  style={{height:`${h}px`, animationDelay:`${i*80}ms`}} />
+              ))}
+            </div>
+          ) : (
+            <span className={`w-2 h-2 rounded-full ${done ? "bg-slate-300" : statusDot}`} />
+          )}
+          <span className={`text-xs font-semibold uppercase tracking-wider ${
+            done ? "text-slate-400" :
+            status === "speaking"   ? "text-blue-600" :
+            status === "processing" ? "text-amber-600" :
+            status === "listening"  ? "text-emerald-600" : "text-slate-400"
+          }`}>
+            {statusLabel || "Ready"}
+          </span>
         </div>
-        {state !== "done" && (
-          <button onClick={endConsultation}
-            className="text-xs border border-red-800/60 text-red-400 hover:bg-red-950/50 px-3 py-1.5 rounded-lg transition">
-            End Consultation
+        {!done && (
+          <button onClick={handleEnd}
+            className="flex items-center gap-1.5 text-xs border border-red-200 text-red-500 hover:bg-red-50 px-3 py-1.5 rounded-lg transition font-medium">
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            End &amp; Summarise
           </button>
         )}
       </div>
 
-      {/* Listening animation */}
-      {state === "listening" && (
-        <div className="flex items-center justify-center gap-1 py-1">
-          {[0,1,2,3,4,5,6].map(i => (
-            <span key={i} className="w-1 bg-green-400 rounded-full animate-pulse"
-              style={{ height: `${10 + Math.sin(i) * 8}px`, animationDelay: `${i * 80}ms` }} />
-          ))}
-          <span className="ml-3 text-green-400 text-xs">Just speak — no button needed</span>
-        </div>
-      )}
-
-      {/* Speaking animation */}
-      {state === "speaking" && (
-        <div className="flex items-center justify-center gap-1 py-1">
-          {[0,1,2,3,4,5,6].map(i => (
-            <span key={i} className="w-1 bg-cyan-400 rounded-full animate-pulse"
-              style={{ height: `${10 + Math.sin(i) * 8}px`, animationDelay: `${i * 80}ms` }} />
-          ))}
-          <span className="ml-3 text-cyan-400 text-xs">Aria is speaking</span>
-        </div>
-      )}
-
-      {/* Tabs */}
-      <div className="flex border-b border-[#1a2f5a]">
-        {(["conversation", "summary"] as Tab[]).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm font-medium capitalize border-b-2 -mb-px transition ${
-              tab === t ? "border-blue-500 text-white" : "border-transparent text-blue-500/40 hover:text-blue-300"
-            }`}>
-            {t}
-            {t === "summary" && summary && <span className="ml-1.5 w-1.5 h-1.5 bg-emerald-500 rounded-full inline-block align-middle" />}
-          </button>
-        ))}
+      {/* Tabs — segmented pill */}
+      <div className="shrink-0 flex items-center gap-1 bg-slate-100 rounded-xl p-1">
+        <button onClick={() => setTab("conversation")}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${
+            tab === "conversation"
+              ? "bg-[#1B2B4B] text-white shadow-sm"
+              : "text-slate-400 hover:text-slate-600"
+          }`}>
+          <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1 1.93c-3.94-.49-7-3.85-7-7.93H2c0 4.97 3.58 9.09 8.25 9.87V22h3.5v-4.13C18.42 17.09 22 12.97 22 8h-2c0 4.08-3.06 7.44-7 7.93V16h-2v-.07z"/>
+          </svg>
+          Interview
+        </button>
+        <button onClick={() => setTab("summary")}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${
+            tab === "summary"
+              ? "bg-[#1B2B4B] text-white shadow-sm"
+              : "text-slate-400 hover:text-slate-600"
+          }`}>
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          Summary
+          {summary && (
+            <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full" />
+          )}
+        </button>
       </div>
 
       {/* Conversation */}
       {tab === "conversation" && (
-        <div className="flex-1 overflow-y-auto flex flex-col gap-3 min-h-64 max-h-[420px]">
-          {state === "loading" && messages.length === 0 && (
-            <div className="flex justify-start">
-              <div className="bg-[#0d1b3e] border border-[#1a2f5a] rounded-2xl px-5 py-3 flex gap-1.5 items-center">
-                {[0,1,2].map(i => <span key={i} className="w-2 h-2 bg-blue-600 rounded-full animate-bounce" style={{ animationDelay: `${i * 150}ms` }} />)}
+        <>
+          <div className="flex-1 overflow-y-auto flex flex-col gap-4 pr-1">
+
+            {status === "processing" && messages.length === 0 && (
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 rounded-full bg-blue-100 border border-blue-200 flex items-center justify-center shrink-0 mt-0.5">
+                  <span className="text-blue-700 text-xs font-bold">A</span>
+                </div>
+                <div className="bg-white border border-slate-200 shadow-sm rounded-2xl rounded-tl-sm px-4 py-3 flex gap-1.5 items-center">
+                  {[0,1,2].map(i => <span key={i} className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: `${i*150}ms` }} />)}
+                </div>
               </div>
+            )}
+
+            {messages.map((m, i) => (
+              <div key={i} className={`flex items-start gap-3 ${m.role === "user" ? "flex-row-reverse" : ""}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-0.5 text-xs font-bold ${
+                  m.role === "user" ? "bg-blue-700 text-white" : "bg-blue-100 border border-blue-200 text-blue-700"
+                }`}>
+                  {m.role === "user" ? patientName.charAt(0).toUpperCase() : "A"}
+                </div>
+                <div className={`max-w-[78%] flex flex-col gap-1 ${m.role === "user" ? "items-end" : "items-start"}`}>
+                  <span className={`text-[10px] font-medium px-1 ${m.role === "user" ? "text-slate-400 text-right" : "text-slate-400"}`}>
+                    {m.role === "user" ? patientName : "Aria · Healthcare Assistant"}
+                  </span>
+                  <div className={`px-4 py-3 rounded-2xl text-sm leading-relaxed ${
+                    m.role === "user"
+                      ? "bg-blue-700 text-white rounded-tr-sm shadow-sm"
+                      : "bg-white border border-slate-200 text-slate-800 rounded-tl-sm shadow-sm"
+                  }`}>
+                    {m.content}
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {status === "processing" && messages.length > 0 && (
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 rounded-full bg-blue-100 border border-blue-200 flex items-center justify-center shrink-0 mt-0.5">
+                  <span className="text-blue-700 text-xs font-bold">A</span>
+                </div>
+                <div className="bg-white border border-slate-200 shadow-sm rounded-2xl rounded-tl-sm px-4 py-3 flex gap-1.5 items-center">
+                  {[0,1,2].map(i => <span key={i} className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: `${i*150}ms` }} />)}
+                </div>
+              </div>
+            )}
+
+            <div ref={chatEndRef} />
+          </div>
+
+          {/* Mic area */}
+          {!done ? (
+            <div className="shrink-0 flex flex-col items-center gap-3 pt-1 pb-2">
+              {liveText && (
+                <div className="w-full bg-white border border-slate-200 shadow-sm rounded-xl px-4 py-2.5 text-center">
+                  <p className="text-slate-700 text-sm italic">&ldquo;{liveText}&rdquo;</p>
+                </div>
+              )}
+
+              <div className="relative flex items-center justify-center">
+                {status === "listening" && (
+                  <>
+                    <span className="absolute w-24 h-24 rounded-full bg-emerald-100 animate-ping opacity-60" />
+                    <span className="absolute w-20 h-20 rounded-full bg-emerald-50" />
+                  </>
+                )}
+                <button
+                  onClick={handleMicTap}
+                  disabled={status !== "listening"}
+                  className={`relative w-16 h-16 rounded-full flex items-center justify-center transition-all duration-300 ${
+                    status === "listening"
+                      ? "bg-emerald-600 shadow-lg shadow-emerald-200 scale-110 hover:bg-emerald-500 active:scale-100 cursor-pointer"
+                      : "bg-slate-200 border border-slate-300 opacity-50 cursor-not-allowed"
+                  }`}>
+                  <svg className={`w-7 h-7 ${status === "listening" ? "text-white" : "text-slate-400"}`} fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1 1.93c-3.94-.49-7-3.85-7-7.93H2c0 4.97 3.58 9.09 8.25 9.87V22h3.5v-4.13C18.42 17.09 22 12.97 22 8h-2c0 4.08-3.06 7.44-7 7.93V16h-2v-.07z"/>
+                  </svg>
+                </button>
+              </div>
+
+              <p className="text-slate-400 text-xs">
+                {status === "listening"  ? "Speak now · tap mic to send early" :
+                 status === "speaking"   ? "Aria is speaking..." :
+                 status === "processing" ? "Processing your response..." : ""}
+              </p>
+
+              {/* Quick phrase chips — visible when listening */}
+              {status === "listening" && (
+                <div className="w-full flex flex-wrap justify-center gap-1.5 pt-1">
+                  {QUICK_PHRASES.map(phrase => (
+                    <button key={phrase}
+                      onClick={() => sendTranscript(phrase)}
+                      className="text-xs bg-slate-50 border border-slate-200 text-slate-500 hover:bg-blue-50 hover:border-blue-300 hover:text-blue-700 px-2.5 py-1 rounded-full transition">
+                      {phrase}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="shrink-0 flex items-center justify-center gap-2 py-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              <span className="text-emerald-600 text-xs">Consultation complete · see Summary tab</span>
             </div>
           )}
-          {messages.map((m, i) => (
-            <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div className={`max-w-sm px-4 py-3 rounded-2xl text-sm leading-relaxed ${
-                m.role === "user"
-                  ? "bg-blue-700 text-white shadow-lg shadow-blue-900/30"
-                  : "bg-[#0d1b3e] border border-[#1a2f5a] text-white"
-              }`}>
-                <p className="text-xs mb-1 opacity-50 font-medium">{m.role === "user" ? patientName : "Aria · Healthcare Assistant"}</p>
-                <p>{m.content}</p>
-              </div>
-            </div>
-          ))}
-          {liveText && (
-            <div className="flex justify-end">
-              <div className="max-w-sm px-4 py-3 rounded-2xl text-sm bg-blue-900/40 border border-blue-700/50 text-blue-100">
-                <p className="text-xs mb-1 opacity-50 font-medium">{patientName} (speaking...)</p>
-                <p>{liveText}</p>
-              </div>
-            </div>
-          )}
-          {state === "loading" && messages.length > 0 && (
-            <div className="flex justify-start">
-              <div className="bg-[#0d1b3e] border border-[#1a2f5a] rounded-2xl px-5 py-3 flex gap-1.5 items-center">
-                {[0,1,2].map(i => <span key={i} className="w-2 h-2 bg-blue-600 rounded-full animate-bounce" style={{ animationDelay: `${i * 150}ms` }} />)}
-              </div>
-            </div>
-          )}
-          <div ref={chatEndRef} />
-        </div>
+        </>
       )}
 
-      {/* Summary tab */}
+      {/* Summary */}
       {tab === "summary" && (
         <div className="flex-1 overflow-y-auto">
           {!summary ? (
-            <div className="flex items-center justify-center gap-2 py-16 text-blue-400/60 text-sm">
-              <span className="w-2 h-2 bg-blue-600 rounded-full animate-bounce" />
+            <div className="flex items-center justify-center gap-2 py-16 text-slate-400 text-sm">
+              <span className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" />
               Generating clinical summary...
             </div>
           ) : (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <span className="text-xs bg-emerald-900/30 text-emerald-400 border border-emerald-700/50 px-3 py-1 rounded-full">Consultation Complete</span>
-                <button
-                  onClick={() => { try { navigator.clipboard.writeText(summary); } catch { /* ignore */ } }}
-                  className="text-xs text-blue-400/60 hover:text-white border border-[#1a2f5a] px-3 py-1 rounded-lg transition">
+                <span className="text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1 rounded-full">Consultation Complete</span>
+                <button onClick={() => { try { navigator.clipboard.writeText(summary); } catch { /* ignore */ } }}
+                  className="text-xs text-slate-400 hover:text-slate-700 border border-slate-200 bg-white px-3 py-1 rounded-lg transition shadow-sm">
                   Copy
                 </button>
               </div>
               <SummaryCard raw={summary} />
+
+              {/* Save visit to Snowflake */}
+              <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3 shadow-sm">
+                <p className="text-xs text-slate-400 uppercase tracking-widest font-semibold">
+                  {saved ? "✓ Visit Saved to Snowflake" : "Save Visit to Warehouse"}
+                </p>
+                {!saved ? (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">Diagnosis</label>
+                        <input
+                          value={saveForm.diagnosisName}
+                          onChange={e => setSaveForm(f => ({ ...f, diagnosisName: e.target.value }))}
+                          className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-800 text-xs outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100"
+                          placeholder="Chief complaint / diagnosis"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">ICD-10 Code</label>
+                        <input
+                          value={saveForm.diagnosisCode}
+                          onChange={e => setSaveForm(f => ({ ...f, diagnosisCode: e.target.value }))}
+                          className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-800 text-xs outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100"
+                          placeholder="e.g. M54.5"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">Provider Name</label>
+                        <input
+                          value={saveForm.providerName}
+                          onChange={e => setSaveForm(f => ({ ...f, providerName: e.target.value }))}
+                          className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-800 text-xs outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100"
+                          placeholder="Dr. Name"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">Visit Type</label>
+                        <select
+                          value={saveForm.patientClass}
+                          onChange={e => setSaveForm(f => ({ ...f, patientClass: e.target.value }))}
+                          className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-800 text-xs outline-none focus:border-blue-400">
+                          <option>Outpatient</option>
+                          <option>Inpatient</option>
+                          <option>Emergency</option>
+                        </select>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleSaveVisit}
+                      disabled={saving || !saveForm.diagnosisName.trim()}
+                      className="w-full flex items-center justify-center gap-2 bg-blue-700 hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold py-2.5 rounded-lg transition">
+                      {saving ? "Saving..." : "Save to Snowflake"}
+                    </button>
+                  </>
+                ) : (
+                  <p className="text-emerald-600 text-xs">Visit record saved successfully.</p>
+                )}
+              </div>
+
+              <button
+                onClick={() => router.push("/today")}
+                className="w-full flex items-center justify-center gap-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm py-3.5 rounded-xl transition shadow-sm">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                </svg>
+                Complete — Return to Today&apos;s Visits
+              </button>
             </div>
           )}
         </div>

@@ -19,3 +19,32 @@ export async function GET() {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
+
+export async function POST(req: Request) {
+  try {
+    const { name } = await req.json();
+    if (!name?.trim()) return NextResponse.json({ error: "Name is required" }, { status: 400 });
+
+    const esc       = (s: string) => String(s ?? "").replace(/'/g, "''");
+    const patientId = `P${Date.now().toString().slice(-7)}`;
+    const username  = name.trim().toLowerCase().replace(/\s+/g, ".") + "." + patientId.slice(-4);
+
+    await runQuery(`
+      INSERT INTO HEALTHCARE_DB.STAGING.STG_PATIENTS
+        (PATIENT_ID, NAME, USERNAME, PATIENT_URL, HL7_FILE, VISIT_COUNT)
+      VALUES (
+        '${patientId}',
+        '${esc(name.trim())}',
+        '${esc(username)}',
+        '',
+        '',
+        0
+      )
+    `);
+
+    return NextResponse.json({ patientId });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
