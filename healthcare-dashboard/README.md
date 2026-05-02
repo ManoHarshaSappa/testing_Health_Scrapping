@@ -1,36 +1,137 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# CareIQ — AI-Powered Healthcare Data Platform
 
-## Getting Started
+**Live:** [care-iq-j1q9.vercel.app](https://care-iq-j1q9.vercel.app)
 
-First, run the development server:
+---
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## What is this?
+
+CareIQ is an end-to-end healthcare data engineering project built to solve a real problem in clinical workflows — the gap between a patient walking into a clinic and actually receiving treatment.
+
+Today, a patient books an appointment, arrives and fills out a paper form, answers the same questions again when the doctor walks in, and then the doctor spends another 15–20 minutes after the visit manually entering all clinical details into the hospital system in HL7 format. On most first visits, the patient leaves without any treatment — only a follow-up appointment.
+
+CareIQ replaces that entire intake process with an AI voice agent and an automated data pipeline, so the doctor walks in already knowing everything about the patient and the first visit can be a treatment visit.
+
+---
+
+## The Problem It Solves
+
+### Manual patient intake is slow and error-prone
+Nurses and front desk staff spend significant time collecting the same information every visit — symptoms, medications, allergies, prior history — by hand on paper forms that then need to be digitized.
+
+### Doctors waste time entering HL7 data after every visit
+After each consultation, doctors return to their desk and manually type all clinical observations into the hospital system. This takes 10–20 minutes per patient and pulls them away from actual care.
+
+### Clinical data is siloed with no analytics layer
+Patient records exist in disconnected systems with no unified way to query diagnoses, visit trends, or patient demographics — so clinical insights stay buried instead of driving better decisions.
+
+---
+
+## How It Works
+
+### The Data Pipeline
+
+Raw healthcare records are scraped from a public HL7 data source and flow through a fully automated cloud pipeline:
+
+```
+GitHub Pages (HL7 source data)
+    → AWS Lambda (Python scraper)
+    → Amazon S3 (raw storage)
+    → AWS Glue (ETL transformation)
+    → Snowflake (data warehouse)
+    → dbt (star schema modeling)
+    → Next.js + Vercel (frontend + API)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The dbt models transform raw staging data into a clean star schema:
+- `dim_patient` — patient demographics
+- `dim_provider` — provider details
+- `dim_date` — date dimension
+- `fact_visits` — visit records with diagnosis codes
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### The AI Voice Agent
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+An AI voice agent named **Aria** conducts the patient intake conversation before the doctor arrives. Aria:
 
-## Learn More
+- Greets the patient by name and asks what brings them in
+- Collects symptom details: location, severity (1–10), duration, triggers
+- Asks about relevant history: diabetes, dialysis, medications, allergies
+- Adapts to the patient — only asks about dialysis if the patient has kidney disease, only asks diabetes follow-ups if the patient is diabetic
+- Never repeats a question the patient already answered
+- Generates a structured clinical summary when the conversation is complete
 
-To learn more about Next.js, take a look at the following resources:
+Powered by **Google Gemini** for conversation and **OpenAI TTS** for voice output. Speech recognition uses the browser's native Web Speech API.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### The Dashboard
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+A Next.js frontend gives clinic staff a full view of patient data pulled live from Snowflake:
 
-## Deploy on Vercel
+- **Home** — analytics: visit volume over time, visit type breakdown (outpatient/inpatient/emergency), top diagnoses by count
+- **Patients** — all 200 patient records, searchable by name or ID, with a daily queue and Waiting/In Progress/Done status tracking
+- **Consultation** — start an AI voice or text intake for any queued patient, view a live report as the conversation builds, save the completed visit back to Snowflake
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+---
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## What the Voice Agent Covers
+
+The dataset contains 200 patients with chronic condition records — chronic kidney disease (dialysis), type 2 diabetes, hypertension, GERD, hypothyroidism, anemia, heart failure, and related diagnoses.
+
+Aria is calibrated to these conditions. It asks about dialysis only if the patient has kidney disease. It asks about numbness and wound healing only if the patient is diabetic. For any symptom the patient mentions, Aria follows that thread and does not jump to unrelated questions.
+
+This scope is based on the current dataset and expands as more condition types are added.
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Data source | GitHub Pages (public HL7 records) |
+| Ingestion | AWS Lambda (Python) |
+| Raw storage | Amazon S3 |
+| ETL | AWS Glue |
+| Data warehouse | Snowflake |
+| Data modeling | dbt |
+| Frontend | Next.js 15, TypeScript, Tailwind CSS |
+| AI conversation | Google Gemini |
+| Text-to-speech | OpenAI TTS |
+| Deployment | Vercel |
+
+---
+
+## Project Structure
+
+```
+healthcare-dashboard/
+├── app/
+│   ├── page.tsx              # Home — analytics dashboard
+│   ├── about/page.tsx        # About — project story and voice agent scope
+│   ├── patients/page.tsx     # Patients — queue + all patient records
+│   ├── patient/[id]/page.tsx # Individual patient + consultation
+│   └── api/
+│       ├── patients/         # Fetch all patients from Snowflake
+│       ├── patient/[id]/     # Fetch single patient + visit history
+│       ├── stats/            # Analytics data
+│       ├── chat/             # Gemini AI conversation
+│       ├── speak/            # OpenAI text-to-speech
+│       ├── summary/          # Clinical summary generation
+│       └── visits/           # Save new visit to Snowflake
+├── components/
+│   ├── ConsultationPanel.tsx # Voice + text intake UI
+│   ├── Navbar.tsx            # Navigation
+│   ├── MedicalBackground.tsx # Decorative SVG background
+│   └── SummaryCard.tsx       # Clinical summary display
+└── lib/
+    └── snowflake.ts          # Snowflake connection with auto-reconnect
+```
+
+---
+
+## Built By
+
+**Mano Harsha Sappa** — Data engineer focused on end-to-end data systems, cloud infrastructure, and AI-powered applications.
+
+- GitHub: [github.com/ManoHarshaSappa](https://github.com/ManoHarshaSappa)
+- LinkedIn: [linkedin.com/in/manoharshasappa](https://www.linkedin.com/in/manoharshasappa/)
+- Portfolio: [manoharshasappa.github.io/portfolio_ManoHarshaSappa](https://manoharshasappa.github.io/portfolio_ManoHarshaSappa/)
+- Email: sappamanoharsha@gmail.com
