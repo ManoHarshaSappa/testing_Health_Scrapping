@@ -16,12 +16,6 @@ type Tab = "interview" | "summary";
 
 const SILENT = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
 
-const QUICK_RESPONSES = [
-  "Yes", "No", "Not sure",
-  "No medications", "No allergies",
-  "About 2–3 days ago", "Pain is 7/10",
-  "Getting worse", "Comes and goes",
-];
 
 function extractReport(msgs: Message[]) {
   const patientMsgs = msgs.filter(m => m.role === "user");
@@ -327,16 +321,6 @@ export default function ConsultationPanel({ patientName, patientHistory, patient
                   <p className="text-slate-500 text-xs italic px-1">&ldquo;{liveText}&rdquo;</p>
                 )}
 
-                {/* Quick chips */}
-                <div className="flex flex-wrap gap-1.5">
-                  {QUICK_RESPONSES.map(chip => (
-                    <button key={chip} onClick={() => sendMessage(chip)}
-                      className="text-xs text-slate-500 border border-slate-200 bg-white hover:bg-blue-600 hover:text-white hover:border-blue-600 px-3 py-1 rounded-full transition">
-                      {chip}
-                    </button>
-                  ))}
-                </div>
-
                 {/* Input */}
                 <div className={`flex items-center gap-2 bg-white border rounded-lg px-3 py-2 transition ${
                   isListening ? "border-teal-400 ring-2 ring-teal-100" : "border-slate-200 focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-100"
@@ -353,10 +337,9 @@ export default function ConsultationPanel({ patientName, patientHistory, patient
 
                   <input ref={inputRef} type="text" value={input}
                     onChange={e => setInput(e.target.value)}
-                    onKeyDown={e => e.key === "Enter" && !e.shiftKey && handleSend()}
-                    placeholder={isListening ? "Listening… or type here" : "Type or speak your response"}
-                    disabled={thinking}
-                    className="flex-1 bg-transparent text-slate-800 text-sm outline-none placeholder:text-slate-400 disabled:opacity-50"
+                    onKeyDown={e => e.key === "Enter" && !e.shiftKey && !thinking && handleSend()}
+                    placeholder={isListening ? "Listening… or type here" : thinking ? "Aria is thinking…" : "Type your response"}
+                    className="flex-1 bg-transparent text-slate-800 text-sm outline-none placeholder:text-slate-400"
                   />
 
                   <button onClick={handleSend}

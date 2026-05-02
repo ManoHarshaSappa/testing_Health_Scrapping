@@ -153,6 +153,23 @@ export default function PatientsPage() {
 
       <div className="max-w-7xl mx-auto px-8 py-6 space-y-8">
 
+        {/* ── STATUS SUMMARY ── */}
+        <div className="grid grid-cols-3 gap-4">
+          {[
+            { label: "Waiting",     idx: 0, color: "text-amber-600", bg: "bg-amber-50",  border: "border-amber-200" },
+            { label: "In Progress", idx: 1, color: "text-blue-600",  bg: "bg-blue-50",   border: "border-blue-200"  },
+            { label: "Done",        idx: 2, color: "text-teal-600",  bg: "bg-teal-50",   border: "border-teal-200"  },
+          ].map(s => {
+            const count = queue.filter(p => (statuses[p.PATIENT_ID] ?? 0) === s.idx).length;
+            return (
+              <div key={s.label} className={`${s.bg} border ${s.border} rounded-xl px-5 py-4 flex items-center justify-between`}>
+                <p className="text-sm font-medium text-slate-600">{s.label}</p>
+                <p className={`text-3xl font-black ${s.color}`}>{count}</p>
+              </div>
+            );
+          })}
+        </div>
+
         {/* ── TODAY'S QUEUE ── */}
         <section>
           <div className="flex items-center justify-between mb-3">
@@ -253,9 +270,10 @@ export default function PatientsPage() {
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
             {filtered.map((p, i) => {
-              const isAdded = inQueue.has(p.PATIENT_ID);
-              const isPrep  = preparing.has(p.PATIENT_ID);
-              const isReady = readyIds.has(p.PATIENT_ID);
+              const isAdded   = inQueue.has(p.PATIENT_ID);
+              const isPrep    = preparing.has(p.PATIENT_ID);
+              const isReady   = readyIds.has(p.PATIENT_ID);
+              const statusIdx = statuses[p.PATIENT_ID] ?? 0;
 
               return (
                 <div key={p.PATIENT_ID}
@@ -265,7 +283,7 @@ export default function PatientsPage() {
                   {isAdded && <div className="h-0.5 bg-blue-500 rounded-t-xl" />}
 
                   <div className="p-4">
-                    {/* Add / status button */}
+                    {/* Add / check button */}
                     <button
                       onClick={e => addToQueue(e, p)}
                       className={`absolute top-3 right-3 w-7 h-7 rounded-lg flex items-center justify-center text-sm font-semibold transition-all ${
@@ -292,9 +310,11 @@ export default function PatientsPage() {
                     <div className="mt-3 flex items-center justify-between">
                       <span className="text-slate-400 text-xs">{p.VISIT_COUNT} visit{p.VISIT_COUNT !== 1 ? "s" : ""}</span>
                       {isAdded && !isPrep && (
-                        <span className={`text-[10px] font-medium ${isReady ? "text-teal-600" : "text-blue-500"}`}>
-                          {isReady ? "Ready" : "In queue"}
-                        </span>
+                        <button
+                          onClick={e => { e.stopPropagation(); cycleStatus(p.PATIENT_ID); }}
+                          className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition ${STATUS[statusIdx].style}`}>
+                          {STATUS[statusIdx].label}
+                        </button>
                       )}
                     </div>
                   </div>
